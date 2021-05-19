@@ -6,6 +6,7 @@
 #include <SPISD.h>
 #include <Camera.h>
 #include <LowPower.h>
+#include <RTC.h>
 #include <Wire.h>
 #include <Adafruit_AMG88xx.h>
 
@@ -125,43 +126,27 @@ void OverlayThermalData(CamImage* img) {
 
 
 void setup() {
-  delay(500);
+  uint32_t start_time = millis();
   Serial.begin(115200);  
   Serial.println("\n\nAMG88xx Interpolated Thermal Camera!");
-
-  LowPower.begin();
   attachInterrupt(digitalPinToInterrupt(DET_PIN), detect, RISING);
 
+  /* to make timestamp */
+  RTC.begin();
+  RtcTime compiledDateTime(__DATE__, __TIME__);
+  RTC.setTime(compiledDateTime);
+
+  /* Initialization of LowPower library takes less than 10 msec */
+  LowPower.begin();
   bootcause_e bc = LowPower.bootCause();
   if ((bc == POR_SUPPLY) || (bc == POR_NORMAL)) {
     Serial.println("Example for GPIO wakeup from cold sleep");
   } else {
     Serial.println("wakeup from cold sleep");
-  }
+  }  
   LowPower.enableBootCause(DET_PIN);  
 
-  while (!theSD.begin(SPI_FULL_SPEED)) {
-    Serial.println("Insert SD Card");
-    Serial.print("Go to cold sleep...");
-    delay(1000);
-    LowPower.coldSleep();
-  }
-
-  /*It seems I cannot use EEPROM library. This is counter measure */
-  int counter = 0;
-  SpiFile cntfile = theSD.open("count.txt", FILE_READ);
-  if (cntfile) {
-    String strcnt = cntfile.readStringUntil("\n");
-    counter  = strcnt.toInt();
-    cntfile.close(); 
-    theSD.remove("count.txt");
-  }
-  cntfile = theSD.open("count.txt", FILE_WRITE);
-  cntfile.println(counter+1);
-  cntfile.close();
-  
-  pBmpHeader = make_bmp_header(&bmp_header_size);
-
+  /* Initialization of amg833 takes 100msec */ 
   if (!amg.begin()) {
     Serial.println("Could not find a valid AMG88xx sensor, check wiring!");
     while (1) { delay(1); }
@@ -175,23 +160,49 @@ void setup() {
     return;
   }
 
+  /* taking picture as soon as possible */
   Serial.println("Take picture!");
   CamImage img = theCamera.takePicture();
+  uint32_t duration = millis() - start_time;
+  Serial.println("time = " + String(duration));
+  
   if (img.isAvailable()) {
     img.convertPixFormat(CAM_IMAGE_PIX_FMT_RGB565);
-
     OverlayThermalData(&img);
+
+    while (!theSD.begin(SPI_FULL_SPEED)) {
+      Serial.println("Insert SD Card");
+      Serial.print("Go to cold sleep...");
+      delay(1000);
+      LowPower.coldSleep();
+    }
+
+    /*It seems I cannot use EEPROM library. This is counter measure */
+    int counter = 0;
+    SpiFile cntfile = theSD.open("count.txt", FILE_READ);
+    if (cntfile) {
+      String strcnt = cntfile.readStringUntil("\n");
+      counter  = strcnt.toInt();
+      cntfile.close(); 
+      theSD.remove("count.txt");
+    }
+    cntfile = theSD.open("count.txt", FILE_WRITE);
+    cntfile.println(counter+1);
+    cntfile.close();
     
+        
     char filename[16] = {0};
     sprintf(filename, "PICT%03d.BMP", counter);
     if (theSD.exists(filename)) {
       Serial.println("remove " + String(filename));
       theSD.remove(filename);
     }
+    
     SpiFile myFile = theSD.open(filename,FILE_WRITE);
     if (!myFile) {
       Serial.println("File open error");
     } else {
+      pBmpHeader = make_bmp_header(&bmp_header_size);
       myFile.write(pBmpHeader, bmp_header_size*sizeof(uint8_t));
       myFile.write(img.getImgBuff(), img.getImgSize());
       myFile.close();
